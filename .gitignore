@@ -13,4 +13,5 @@ modules/__pycache__/
 .DS_Store
 
 # Streamlit Local Config / Cache
-.streamlit/
+.streamlit/california_housing.csv
+california_housing.csv

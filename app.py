@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+from modules.ml_engine import apply_knn_imputer, detect_anomalies_isolation_forest
 from modules.data_cleaning import remove_duplicates, handle_missing_values
 from modules.data_visualization import (
     plot_distribution,
@@ -12,6 +14,24 @@ st.title("Automated Data Cleaning & Profiling Dashboard")
 
 uploaded_file = st.file_uploader("Upload your CSV or Excel file", type=["csv", "xlsx"])
 
+with st.sidebar:
+        st.header("ML Engine Settings")
+        contamination = st.slider(
+            "Expected Contamination Rate",
+            min_value=0.01,
+            max_value=0.40,
+            value=0.05,
+            step=0.01,
+            help="Estimated proportion of outliers in the dataset (5% default)."
+        )
+        knn_k = st.slider(
+            "KNN Imputer Neighbors (k)",
+            min_value=2,
+            max_value=20,
+            value=5,
+            step=1,
+            help="Number of nearest neighbors used to impute missing numeric values."
+        )
 if uploaded_file is not None:
     
   
@@ -91,14 +111,14 @@ if uploaded_file is not None:
         if numeric_columns:
             selected_num = st.selectbox("Select numeric column:", numeric_columns)
             fig = plot_distribution(st.session_state.df, selected_num)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.warning("No numeric columns available.")
 
     elif viz_choice == "Correlation Heatmap":
         if len(numeric_columns) >= 2:
             fig = plot_correlation_heatmap(st.session_state.df)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.warning("Need at least 2 numeric columns for a correlation heatmap.")
 
@@ -106,7 +126,7 @@ if uploaded_file is not None:
         if categorical_columns:
             selected_cat = st.selectbox("Select categorical column:", categorical_columns)
             fig = plot_categorical_counts(st.session_state.df, selected_cat)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         else:
             st.warning("No categorical columns available.")
 
@@ -121,3 +141,63 @@ if uploaded_file is not None:
         file_name="cleaned_data.csv",
         mime="text/csv"
     )
+
+    st.write("---")
+    st.write("### 🤖 Multivariate Anomaly Detection")
+
+    # Step 1: Impute missing values with KNN
+    df_clean = apply_knn_imputer(current_df, n_neighbors=knn_k)
+
+    # Step 2: Score and flag anomalies with Isolation Forest
+    df_scored, anomaly_count = detect_anomalies_isolation_forest(df_clean, contamination=contamination)
+
+    # Step 3: Anomaly Metrics Cards
+    total_records = len(df_scored)
+    anomaly_rate = (anomaly_count / total_records * 100) if total_records > 0 else 0.0
+
+    ano_col1, ano_col2, ano_col3 = st.columns(3)
+    ano_col1.metric("Total Records Evaluated", f"{total_records:,}")
+    ano_col2.metric("Flagged Anomalies", f"{anomaly_count:,}")
+    ano_col3.metric("Anomaly Rate", f"{anomaly_rate:.2f}%")
+
+    # Step 4: Scatter Plot Feature Space
+    numeric_cols = [c for c in df_scored.select_dtypes(include=['number']).columns if c != "anomaly_score"]
+
+    if len(numeric_cols) >= 2:
+        st.write("#### Feature Space Explorer")
+        axis1, axis2 = st.columns(2)
+        with axis1:
+            x_axis = st.selectbox("X-Axis Feature", numeric_cols, index=0)
+        with axis2:
+            y_axis = st.selectbox("Y-Axis Feature", numeric_cols, index=1)
+
+        fig = px.scatter(
+            df_scored,
+            x=x_axis,
+            y=y_axis,
+            color="is_anomaly",
+            color_discrete_map={True: "#EF553B", False: "#636EFA"},
+            hover_data=["anomaly_score"],
+            title=f"{y_axis} vs. {x_axis} (Colored by Anomaly Status)",
+            template="plotly_white"
+        )
+        fig.update_traces(marker=dict(size=9, opacity=0.8, line=dict(width=1, color="DarkSlateGrey")))
+        st.plotly_chart(fig, width="stretch")
+    else:
+        st.info("Upload data with at least 2 numeric features to display the scatter plot.")
+
+    # Step 5: Audit Table & Download
+    st.write("#### Flagged Records Audit")
+    outliers_df = df_scored[df_scored["is_anomaly"]].sort_values(by="anomaly_score", ascending=True)
+
+    if not outliers_df.empty:
+        st.dataframe(outliers_df, width="stretch")
+        csv_bytes = outliers_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download Flagged Outliers (CSV)",
+            data=csv_bytes,
+            file_name="flagged_anomalies.csv",
+            mime="text/csv"
+        )
+    else:
+        st.success("No anomalies detected at the current sensitivity setting.")
